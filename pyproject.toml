@@ -17,6 +17,10 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 
+[project.urls]
+Homepage = "https://github.com/tanskeran/easyscholar-mcp"
+Issues = "https://github.com/tanskeran/easyscholar-mcp/issues"
+
 [project.scripts]
 easyscholar-mcp = "easyscholar_mcp.server:main"
 

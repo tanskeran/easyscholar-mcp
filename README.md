@@ -4,7 +4,7 @@ An **unofficial** MCP server that lets AI agents (Claude, Cursor, Cline, Codex, 
 
 Not affiliated with or endorsed by easyScholar. You need your own easyScholar secret key.
 
-<!-- mcp-name: io.github.GITHUB_USERNAME/easyscholar-mcp -->
+<!-- mcp-name: io.github.tanskeran/easyscholar-mcp -->
 
 ## Tools
 
