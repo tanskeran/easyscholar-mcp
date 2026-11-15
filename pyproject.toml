@@ -1,6 +1,6 @@
 [project]
 name = "easyscholar-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Unofficial MCP server for AI agents: journal impact factor, JCR quartile and CAS (中科院) zone lookup via the easyScholar open API"
 readme = "README.md"
 license = "MIT"

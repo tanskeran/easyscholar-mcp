@@ -34,7 +34,9 @@
 
 - 字段名是固定的英文名，方便 agent 读取；值原样取自 easyScholar，以字符串返回，很多是中文。
 - easyScholar 没有数据的字段不返回。
-- `found` 为 `false` 时会附带 `hint`：easyScholar 要按它收录的写法匹配期刊名，agent 可以换全称、缩写或带连字符的写法再试。
+- 按原名查不到时，服务端会自动换最多三种常见写法再查：去掉开头的 "The"、`&` 和 `and` 互换、去掉标点、把 `:` 换成 `-`。换写法后查到的，`matched_name` 会写明用的是哪个名字。
+- 都查不到时 `found` 为 `false`，`tried` 列出已经试过的写法，并附带 `hint`。agent 可以再换缩写或全称。
+- 查到的结果会在本地缓存 30 天，重复查询不消耗接口次数。见[配置](#配置)。
 - 密钥只从环境变量读取；返回的错误信息里如果出现密钥，会替换成 `***`。
 
 ### 字段说明
@@ -68,13 +70,67 @@
 }
 ```
 
-Claude Code 用户：
+### Claude Code
 
 ```bash
 claude mcp add easyscholar -e EASYSCHOLAR_SECRET_KEY=你的密钥 -- uvx easyscholar-mcp
 ```
 
-如果不想把密钥写进配置文件，可以把 `EASYSCHOLAR_SECRET_KEY` 设成用户环境变量，再在支持变量展开的客户端里写成 `"${EASYSCHOLAR_SECRET_KEY}"`。
+### Claude Desktop、Cursor、Cline、Windsurf
+
+这几个客户端都用上面的 `mcpServers` 格式，粘贴到：
+
+| 客户端 | 配置文件 |
+|---|---|
+| Claude Desktop | 设置 → 开发者 → 编辑配置（`claude_desktop_config.json`） |
+| Cursor | `~/.cursor/mcp.json`（所有项目）或 `.cursor/mcp.json`（单个项目） |
+| Cline | MCP Servers → Configure → `cline_mcp_settings.json` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
+
+### VS Code（Copilot agent 模式）
+
+`.vscode/mcp.json`。第一次启动时 VS Code 会让你输入密钥，并加密保存：
+
+```json
+{
+  "inputs": [
+    { "type": "promptString", "id": "easyscholar-key", "description": "easyScholar 密钥", "password": true }
+  ],
+  "servers": {
+    "easyscholar": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["easyscholar-mcp"],
+      "env": { "EASYSCHOLAR_SECRET_KEY": "${input:easyscholar-key}" }
+    }
+  }
+}
+```
+
+### Codex CLI
+
+`~/.codex/config.toml`：
+
+```toml
+[mcp_servers.easyscholar]
+command = "uvx"
+args = ["easyscholar-mcp"]
+env = { EASYSCHOLAR_SECRET_KEY = "你的密钥" }
+```
+
+### 不把密钥写进配置文件
+
+可以把 `EASYSCHOLAR_SECRET_KEY` 设成用户环境变量，再在支持变量展开的客户端里写成 `"${EASYSCHOLAR_SECRET_KEY}"`。
+
+## 配置
+
+| 环境变量 | 默认值 | 含义 |
+|---|---|---|
+| `EASYSCHOLAR_SECRET_KEY` | （必填） | easyScholar 密钥 |
+| `EASYSCHOLAR_CACHE_DAYS` | `30` | 查到的结果缓存几天，设为 `0` 关闭缓存 |
+| `EASYSCHOLAR_CACHE_DIR` | Windows 为 `%LOCALAPPDATA%\easyscholar-mcp`，其他系统为 `~/.cache/easyscholar-mcp` | 缓存文件位置 |
+
+缓存里只有期刊数据，不含密钥。
 
 ## 许可证
 

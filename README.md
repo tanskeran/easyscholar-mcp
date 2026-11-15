@@ -36,7 +36,9 @@ Each result looks like this:
 
 - Keys are stable English names. Values are passed through from easyScholar as strings, and are often in Chinese.
 - Only fields that easyScholar has data for are present.
-- If `found` is `false`, the result includes a `hint`. easyScholar matches its own spelling of a journal title, so the agent should retry with the full title, the abbreviation, or a hyphenated variant.
+- If a name is not found as given, the server tries up to three common respellings by itself: it drops a leading "The", swaps `&` and `and`, drops punctuation, and turns `:` into `-`. When one of them matches, `matched_name` shows which.
+- If nothing matches, `found` is `false` and the result lists the spellings in `tried` plus a `hint`. The agent can then try the abbreviation or the full title.
+- Found results are cached locally for 30 days, so repeated lookups don't use your API quota. See [Configuration](#configuration).
 - The secret key is read only from the environment and is replaced with `***` in any error text the server returns.
 
 ### Metric keys
@@ -70,13 +72,67 @@ Each result looks like this:
 }
 ```
 
-If you use Claude Code:
+### Claude Code
 
 ```bash
 claude mcp add easyscholar -e EASYSCHOLAR_SECRET_KEY=your-key -- uvx easyscholar-mcp
 ```
 
-You can also keep the key out of config files: set `EASYSCHOLAR_SECRET_KEY` as a user environment variable, and reference it as `"${EASYSCHOLAR_SECRET_KEY}"` in clients that expand variables.
+### Claude Desktop, Cursor, Cline, Windsurf
+
+These clients use the `mcpServers` format shown above. Paste it into:
+
+| Client | Config file |
+|---|---|
+| Claude Desktop | Settings → Developer → Edit Config (`claude_desktop_config.json`) |
+| Cursor | `~/.cursor/mcp.json` (all projects) or `.cursor/mcp.json` (one project) |
+| Cline | MCP Servers → Configure → `cline_mcp_settings.json` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
+
+### VS Code (Copilot agent mode)
+
+`.vscode/mcp.json`. VS Code asks for the key the first time and stores it securely:
+
+```json
+{
+  "inputs": [
+    { "type": "promptString", "id": "easyscholar-key", "description": "easyScholar secret key", "password": true }
+  ],
+  "servers": {
+    "easyscholar": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["easyscholar-mcp"],
+      "env": { "EASYSCHOLAR_SECRET_KEY": "${input:easyscholar-key}" }
+    }
+  }
+}
+```
+
+### Codex CLI
+
+`~/.codex/config.toml`:
+
+```toml
+[mcp_servers.easyscholar]
+command = "uvx"
+args = ["easyscholar-mcp"]
+env = { EASYSCHOLAR_SECRET_KEY = "your-key" }
+```
+
+### Keeping the key out of config files
+
+Set `EASYSCHOLAR_SECRET_KEY` as a user environment variable, and reference it as `"${EASYSCHOLAR_SECRET_KEY}"` in clients that expand variables.
+
+## Configuration
+
+| Environment variable | Default | Meaning |
+|---|---|---|
+| `EASYSCHOLAR_SECRET_KEY` | (required) | Your easyScholar secret key |
+| `EASYSCHOLAR_CACHE_DAYS` | `30` | How long found results are cached. `0` turns the cache off |
+| `EASYSCHOLAR_CACHE_DIR` | `%LOCALAPPDATA%\easyscholar-mcp` on Windows, `~/.cache/easyscholar-mcp` elsewhere | Where the cache file is kept |
+
+The cache holds journal metrics only, never the key.
 
 ## License
 

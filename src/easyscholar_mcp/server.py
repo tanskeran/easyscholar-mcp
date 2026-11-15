@@ -5,8 +5,13 @@ The secret key is read only from the EASYSCHOLAR_SECRET_KEY environment variable
 scrubbed from every error message the server returns.
 """
 import asyncio
+import json
 import logging
 import os
+import re
+import sys
+import time
+from pathlib import Path
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -19,6 +24,7 @@ for _name in ("httpx", "httpcore"):
 API = "https://www.easyscholar.cc/open/getPublicationRank"
 GAP_S = 0.6          # pause between requests in a batch (avoid easyScholar rate limiting)
 MAX_BATCH = 50       # max journals per batch call
+MAX_VARIANTS = 3     # extra spellings tried when a name is not found (each costs one API call)
 
 # easyScholar officialRank field -> stable English key (unlisted fields are passed through as-is)
 FIELDS = {
@@ -47,9 +53,9 @@ FIELDS = {
 SKIP = {"swjtu", "xju", "cug", "scu", "cpu", "cufe", "xdu", "hhu", "nju", "swufe", "ruc", "uibe"}
 
 NOT_FOUND_HINT = (
-    "Not found. easyScholar matches its own spelling of the journal name: retry with the full "
-    "official title, the abbreviation, or a hyphenated variant (e.g. 'JPAD-Journal of Prevention "
-    "of Alzheimers Disease'); drop leading 'The'; '&' vs 'and' can matter."
+    "Not found. The spellings in 'tried' were already attempted. easyScholar matches its own "
+    "spelling of the journal name: retry with the full official title (if you used an "
+    "abbreviation) or the abbreviation (if you used the full title)."
 )
 
 mcp = FastMCP("easyscholar")
@@ -81,6 +87,81 @@ def _custom(custom: dict | None) -> list[str]:
     return out
 
 
+def _variants(name: str) -> list[str]:
+    """The name as given, then up to MAX_VARIANTS common respellings (deduplicated, case-insensitive)."""
+    n = " ".join(name.split())
+    out = [n]
+
+    def add(x: str) -> None:
+        x = " ".join(x.split()).strip(" -")
+        if x and x.casefold() not in {o.casefold() for o in out}:
+            out.append(x)
+
+    base = re.sub(r"^the\s+", "", n, flags=re.I)
+    add(base)                                                   # drop leading "The"
+    if "&" in base:
+        add(base.replace("&", " and "))
+    elif re.search(r"\band\b", base, re.I):
+        add(re.sub(r"\band\b", "&", base, flags=re.I))
+    clean = re.sub(r"[^\w\s&:-]", " ", re.sub(r"['’]", "", base))  # Alzheimer's -> Alzheimers
+    add(clean.replace(":", " "))                                # drop punctuation
+    if ":" in clean:
+        add(re.sub(r"\s*:\s*", "-", clean, count=1))           # "JPAD: Journal…" -> "JPAD-Journal…"
+    return out[: 1 + MAX_VARIANTS]
+
+
+# ---- local cache of successful lookups (saves API quota; journal metrics change about once a year)
+
+def _cache_days() -> float:
+    try:
+        return float(os.environ.get("EASYSCHOLAR_CACHE_DAYS", "30"))
+    except ValueError:
+        return 30.0
+
+
+def _cache_file() -> Path:
+    d = os.environ.get("EASYSCHOLAR_CACHE_DIR")
+    if d:
+        root = Path(d)
+    elif sys.platform == "win32" and os.environ.get("LOCALAPPDATA"):
+        root = Path(os.environ["LOCALAPPDATA"]) / "easyscholar-mcp"
+    else:
+        root = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "easyscholar-mcp"
+    return root / "cache.json"
+
+
+def _cache_load() -> dict:
+    try:
+        return json.loads(_cache_file().read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _cache_get(name: str) -> dict | None:
+    days = _cache_days()
+    if days <= 0:
+        return None
+    e = _cache_load().get(name.casefold())
+    if e and time.time() - e.get("t", 0) < days * 86400:
+        return e.get("r")
+    return None
+
+
+def _cache_put(name: str, result: dict) -> None:
+    if _cache_days() <= 0:
+        return
+    try:
+        f = _cache_file()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        data = _cache_load()
+        data[name.casefold()] = {"t": time.time(), "r": result}
+        tmp = f.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, f)
+    except Exception:
+        pass  # caching is best-effort
+
+
 async def _query(client: httpx.AsyncClient, name: str) -> dict:
     for attempt in range(2):  # retry once on transient connection errors
         try:
@@ -106,10 +187,36 @@ async def _query(client: httpx.AsyncClient, name: str) -> dict:
     return res
 
 
+async def _lookup(client: httpx.AsyncClient, name: str) -> dict:
+    """Cache, then the name as given, then respellings until one is found."""
+    name = " ".join(name.split())
+    hit = _cache_get(name)
+    if hit is not None:
+        return {**hit, "query": name}
+    tried = _variants(name)
+    res: dict = {}
+    for i, v in enumerate(tried):
+        if i:
+            await asyncio.sleep(GAP_S)
+        res = await _query(client, v)
+        if res.get("found"):
+            res["query"] = name
+            if v != name:
+                res["matched_name"] = v
+            _cache_put(name, res)
+            return res
+        if "error" in res:  # API refused (bad key, quota…): don't burn more calls
+            res["query"] = name
+            return res
+    res["query"] = name
+    res["tried"] = tried
+    return res
+
+
 async def _safe_query(client: httpx.AsyncClient, name: str) -> dict:
     """Never raise; replace the secret key in any error text with ***."""
     try:
-        return await _query(client, name)
+        return await _lookup(client, name)
     except Exception as e:
         msg = f"{type(e).__name__}: {e}"
         k = os.environ.get("EASYSCHOLAR_SECRET_KEY", "").strip()
@@ -124,12 +231,17 @@ async def journal_rank(publication_name: str) -> dict:
 
     publication_name: journal title, e.g. "NeuroImage: Clinical", "Annals of Neurology".
 
-    Returns {"query", "found", "metrics", "custom_ranks"?} or {"found": false, "hint"/"error"}.
+    If the name is not found as given, a few respellings are tried automatically (drop leading
+    "The", '&' <-> 'and', drop punctuation, ':' -> '-'); "matched_name" then shows the spelling that
+    matched. Found results are cached locally for 30 days.
+
+    Returns {"query", "found", "metrics", "custom_ranks"?, "matched_name"?} or
+    {"found": false, "tried", "hint"} / {"found": false, "error"}.
     metrics keys: impact_factor (JCR IF), impact_factor_5y, jcr_quartile (Q1-Q4), jci, esi_field,
     cas_zone (中科院分区升级版), cas_subcategory_zone, cas_top, cas_zone_basic (中科院基础版),
     cas_warning (中科院预警), xinrui_zone (新锐分区), ssci_quartile, esci_quartile, ei, pku_core,
     cssci, cscd, ccf. Only keys easyScholar has data for are present; values are strings.
-    If found is false, follow the hint and retry with another spelling of the name.
+    If found is false, do not retry the spellings in "tried"; try the abbreviation or full title.
     """
     async with httpx.AsyncClient() as c:
         return await _safe_query(c, publication_name)
